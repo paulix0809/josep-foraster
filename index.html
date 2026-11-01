@@ -1270,64 +1270,72 @@
     railBtns.forEach((b, k) => { b.classList.toggle('on', k === i); b.classList.toggle('pasado', k < i); });
   };
   ponCap(0, 0);
-  let histST = null, bloqueo = 0;
+  // ── Secciones por pasos (historia y estaciones): un gesto de rueda/trackpad, una flecha o un deslizamiento = un paso.
+  //    Desde el último paso hacia abajo se pasa a lo siguiente; desde el primero hacia arriba, a lo anterior. ──
+  const SECC = [];
+  const secc = id => SECC.find(x => x.id === id);
+  let bloqueo = 0, acumulado = 0, ultimoFuera = 0, ultimoGesto = 0, destino = null;
+  const yAhora = () => lenis ? lenis.scroll : scrollY;
+  const activa = () => { const y = yAhora(); return SECC.find(x => y >= x.st.start - 4 && y <= x.st.end + 4); };
+  const viajar = (y, dur, fin) => lenis ? lenis.scrollTo(y, { duration: dur, easing: t => 1 - Math.pow(1 - t, 3), force: true, onComplete: fin }) : (scrollTo(0, y), fin && fin());
+  const darPaso = (x, dir) => {
+    const base = destino && destino.x === x ? destino.k : x.actual(), k = base + dir, dentroK = k >= 0 && k < x.n;
+    destino = dentroK ? { x, k } : null; bloqueo = performance.now() + (dentroK ? x.bloqueo : 800);
+    viajar(dentroK ? x.pos(k) : k < 0 ? x.arriba() : x.abajo(), dentroK ? x.dur : .9, () => { destino = null; });
+  };
+  // al llegar haciendo scroll tú (no desde el menú), se coloca en el primer o el último paso; la inercia de la llegada no salta ninguno
+  ['wheel', 'touchmove', 'keydown'].forEach(ev => addEventListener(ev, () => { ultimoGesto = performance.now(); }, { passive: true, capture: true }));
+  const entrarEn = (id, k) => { const x = secc(id); if (!x || performance.now() - ultimoGesto > 500 || destino) return; bloqueo = performance.now() + 650; viajar(x.pos(k), .55); };
   if (!quieto) {
-    histST = ScrollTrigger.create({ trigger: '.hist-pin', start: 'top top', end: () => '+=' + innerHeight * .45 * NC, pin: true, invalidateOnRefresh: true,
-      // al entrar (por arriba o por abajo) se coloca en el primer o el último momento; la inercia de la llegada no salta ninguno
-      onEnter: () => entrar(0), onEnterBack: () => entrar(NC - 1),
-      onUpdate: s => { gsap.set('.hist-rail .lleno', { scaleX: s.progress }); ponCap(Math.min(NC - 1, Math.floor(s.progress * NC))); } });
-    const posCap = k => histST.start + (histST.end - histST.start) * (k + .5) / NC;
-    // solo cuando llegas haciendo scroll tú: si se pasa por aquí desde el menú (camino de la finca, los vinos…), no se frena
-    let ultimoGesto = 0;
-    ['wheel', 'touchmove', 'keydown'].forEach(ev => addEventListener(ev, () => { ultimoGesto = performance.now(); }, { passive: true, capture: true }));
-    function entrar(k) { if (performance.now() - ultimoGesto > 500) return; bloqueo = performance.now() + 650; if (lenis) lenis.scrollTo(posCap(k), { duration: .55, easing: t => 1 - Math.pow(1 - t, 3), force: true }); }
-    railBtns.forEach((b, k) => b.addEventListener('click', () => irA(posCap(k))));
-
-    // ── Historia capítulo a capítulo: un gesto de rueda/trackpad, un deslizamiento o una flecha = un momento ──
-    const yAhora = () => lenis ? lenis.scroll : scrollY;
-    const dentro = () => { const y = yAhora(); return y >= histST.start - 4 && y <= histST.end + 4; };
-    const capActual = () => Math.min(NC - 1, Math.max(0, Math.floor((yAhora() - histST.start) / (histST.end - histST.start) * NC)));
-    let destino = -1, acumulado = 0;
-    const saltar = (dir) => {
-      const base = destino >= 0 ? destino : capActual(), k = base + dir;
-      // dentro: al momento siguiente; desde el último hacia abajo, a la finca; desde el primero hacia arriba, a la portada
-      const y = k < 0 ? Math.max(0, histST.start - innerHeight) : k >= NC ? histST.end + 12 : posCap(k);
-      destino = k >= 0 && k < NC ? k : -1; bloqueo = performance.now() + 700;
-      const fin = () => { destino = -1; };
-      lenis ? lenis.scrollTo(y, { duration: k >= 0 && k < NC ? .75 : .9, easing: t => 1 - Math.pow(1 - t, 3), force: true, onComplete: fin }) : (scrollTo(0, y), fin());
-      return true;
-    };
     // la rueda se captura antes que el scroll suave; la inercia del trackpad no cuenta como gesto nuevo
-    let ultimoFuera = 0;
     addEventListener('wheel', e => {
       if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
-      const ahora = performance.now();
-      if (!dentro()) {
-        // justo después de salir, la inercia que sobra no frena el viaje a la finca o a la portada
+      const ahora = performance.now(), x = activa();
+      if (!x) {
         if (ahora < bloqueo) { e.preventDefault(); e.stopPropagation(); bloqueo = Math.max(bloqueo, ahora + 140); return; }
+        // a menos de una pantalla de una sección por pasos, un gesto hacia ella entra directamente (portada → 1828, «El trepat» → otoño)
+        const y = yAhora(), cerca = SECC.find(s => (e.deltaY > 0 && y < s.st.start && y >= s.st.start - innerHeight * 1.05) || (e.deltaY < 0 && y > s.st.end && y <= s.st.end + innerHeight * 1.05));
+        if (cerca && Math.abs(e.deltaY) > 2) { e.preventDefault(); e.stopPropagation(); ultimoGesto = ahora; entrarEn(cerca.id, e.deltaY > 0 ? 0 : cerca.n - 1); return; }
         ultimoFuera = ahora; return;
       }
       e.preventDefault(); e.stopPropagation();
-      // llegada con inercia desde fuera: solo coloca en el primer o el último momento
-      if (ahora - ultimoFuera < 250) { ultimoFuera = 0; entrar(e.deltaY > 0 ? 0 : NC - 1); return; }
+      if (ahora - ultimoFuera < 250) { ultimoFuera = 0; entrarEn(x.id, e.deltaY > 0 ? 0 : x.n - 1); return; }
       if (ahora < bloqueo) { bloqueo = Math.max(bloqueo, ahora + 140); acumulado = 0; return; }
       acumulado += e.deltaY;
-      if (Math.abs(acumulado) > 18) { const dir = Math.sign(acumulado); acumulado = 0; saltar(dir); }
+      if (Math.abs(acumulado) > 18) { const dir = Math.sign(acumulado); acumulado = 0; darPaso(x, dir); }
     }, { passive: false, capture: true });
     addEventListener('keydown', e => {
-      if (!dentro() || e.target.matches('input, textarea')) return;
-      const dir = ['ArrowDown', 'PageDown', ' '].includes(e.key) ? 1 : ['ArrowUp', 'PageUp'].includes(e.key) ? -1 : 0;
-      if (dir) { e.preventDefault(); if (!e.repeat || performance.now() >= bloqueo - 300) saltar(dir); } // cada pulsación cuenta; mantenerla no se los salta todos
+      if (e.target.matches('input, textarea, button, a') && e.key === ' ') return;
+      const x = activa(), dir = ['ArrowDown', 'PageDown', ' '].includes(e.key) ? 1 : ['ArrowUp', 'PageUp'].includes(e.key) ? -1 : 0;
+      if (!x) { // igual que con la rueda: a menos de una pantalla, la flecha entra directamente
+        const y = yAhora(), cerca = dir && SECC.find(s => (dir > 0 && y < s.st.start && y >= s.st.start - innerHeight * 1.05) || (dir < 0 && y > s.st.end && y <= s.st.end + innerHeight * 1.05));
+        if (cerca && !e.target.matches('input, textarea') && performance.now() >= bloqueo) { e.preventDefault(); entrarEn(cerca.id, dir > 0 ? 0 : cerca.n - 1); }
+        return;
+      }
+      if (e.target.matches('input, textarea')) return;
+      if (dir) { e.preventDefault(); if (!e.repeat || performance.now() >= bloqueo - 300) darPaso(x, dir); } // cada pulsación cuenta; mantenerla no se los salta todos
     });
-    // en el móvil: al soltar un deslizamiento corto, va al momento siguiente o al anterior (y se para la inercia del dedo)
+    // en el móvil: al soltar un deslizamiento corto, va al paso siguiente o al anterior (y se para la inercia del dedo)
     let toque = null;
     const raizH = document.documentElement;
-    addEventListener('touchstart', e => { toque = dentro() ? { y: e.touches[0].clientY, k: capActual() } : null; }, { passive: true });
-    addEventListener('touchend', e => { if (!toque) return; const dy = toque.y - e.changedTouches[0].clientY, k = toque.k + Math.sign(dy); toque = null;
-      if (Math.abs(dy) < 24 || k < 0 || k >= NC) return;
-      destino = k; raizH.style.overflow = 'hidden';
-      const fin = () => { destino = -1; raizH.style.overflow = ''; };
-      lenis ? lenis.scrollTo(posCap(k), { duration: .6, force: true, onComplete: fin }) : (scrollTo(0, posCap(k)), setTimeout(fin, 50)); }, { passive: true });
+    addEventListener('touchstart', e => { const x = activa(); toque = x ? { x, y: e.touches[0].clientY, k: x.actual() } : null; }, { passive: true });
+    addEventListener('touchend', e => { if (!toque) return; const { x } = toque, dy = toque.y - e.changedTouches[0].clientY, k = toque.k + Math.sign(dy); toque = null;
+      if (Math.abs(dy) < 24 || k < 0 || k >= x.n) return;
+      destino = { x, k }; raizH.style.overflow = 'hidden';
+      viajar(x.pos(k), .6, () => { destino = null; raizH.style.overflow = ''; }); }, { passive: true });
+  }
+
+  let histST = null;
+  if (!quieto) {
+    histST = ScrollTrigger.create({ trigger: '.hist-pin', start: 'top top', end: () => '+=' + innerHeight * .45 * NC, pin: true, invalidateOnRefresh: true,
+      onEnter: () => entrarEn('historia', 0), onEnterBack: () => entrarEn('historia', NC - 1),
+      onUpdate: s => { gsap.set('.hist-rail .lleno', { scaleX: s.progress }); ponCap(Math.min(NC - 1, Math.floor(s.progress * NC))); } });
+    const posCap = k => histST.start + (histST.end - histST.start) * (k + .5) / NC;
+    railBtns.forEach((b, k) => b.addEventListener('click', () => irA(posCap(k))));
+    SECC.push({ id: 'historia', st: histST, n: NC, pos: posCap, dur: .75, bloqueo: 700,
+      actual: () => Math.min(NC - 1, Math.max(0, Math.floor((yAhora() - histST.start) / (histST.end - histST.start) * NC))),
+      arriba: () => Math.max(0, histST.start - innerHeight),                                   // a la portada
+      abajo: () => secc('finca') ? secc('finca').pos(0) : histST.end + 12 });                 // a la primera estación
   }
 
   // ── La finca: cada estación entra capa a capa (primer plano → cielo); la marca recorre el año ──
@@ -1349,6 +1357,7 @@
     const R = .35, Tt = 1, total = R + (N - 1) * (Tt + R);
     const tl = gsap.timeline({ defaults: { ease: 'none' }, scrollTrigger: {
       trigger: '.finca-pin', start: 'top top', end: () => '+=' + innerHeight * .8 * (N - 1), pin: true, scrub: .8, invalidateOnRefresh: true,
+      onEnter: () => entrarEn('finca', 0), onEnterBack: () => entrarEn('finca', N - 1),
       onUpdate: s => {
         const k = s.progress * total;
         marcaEst(Math.min(N - 1, Math.max(0, Math.round((k - R / 2) / (Tt + R)))));
@@ -1367,6 +1376,12 @@
         .to($('.est-txt', ests[i]), { autoAlpha: 1, y: 0, duration: .4, ease: 'power3.out' }, t + .55)
         .to({}, { duration: R }, t + Tt);
     }
+    // cada estación descansa en el centro de su reposo; un paso hace la transición entera
+    const stF = tl.scrollTrigger, posEst = i => stF.start + (stF.end - stF.start) * (R / 2 + i * (Tt + R)) / total;
+    SECC.push({ id: 'finca', st: stF, n: N, pos: posEst, dur: 1.15, bloqueo: 1000,
+      actual: () => Math.min(N - 1, Math.max(0, Math.round(((yAhora() - stF.start) / (stF.end - stF.start) * total - R / 2) / (Tt + R)))),
+      arriba: () => secc('historia') ? secc('historia').pos(NC - 1) : stF.start - innerHeight, // al último momento de la historia
+      abajo: () => $('#trepat').getBoundingClientRect().top + yAhora() });                     // arriba del todo de «El trepat»
   }
 
   // ── Paralaje interior y entradas ──
