@@ -1275,6 +1275,9 @@
   const SECC = [];
   const secc = id => SECC.find(x => x.id === id);
   let bloqueo = 0, acumulado = 0, ultimoFuera = 0, ultimoGesto = 0, destino = null;
+  // un «zas» fuerte y rápido (para irse arriba del todo, por ejemplo) pasa de largo sin pararse en cada paso
+  let gesto = null, libreHasta = 0, tAsentar = 0;
+  const pasaDeLargo = () => performance.now() < libreHasta;
   const yAhora = () => lenis ? lenis.scroll : scrollY;
   const activa = () => { const y = yAhora(); return SECC.find(x => y >= x.st.start - 4 && y <= x.st.end + 4); };
   const viajar = (y, dur, fin) => lenis ? lenis.scrollTo(y, { duration: dur, easing: t => 1 - Math.pow(1 - t, 3), force: true, onComplete: fin }) : (scrollTo(0, y), fin && fin());
@@ -1284,13 +1287,19 @@
     viajar(dentroK ? x.pos(k) : k < 0 ? x.arriba() : x.abajo(), dentroK ? x.dur : .9, () => { destino = null; });
   };
   // al llegar haciendo scroll tú (no desde el menú), se coloca en el primer o el último paso; la inercia de la llegada no salta ninguno
-  ['wheel', 'touchmove', 'keydown'].forEach(ev => addEventListener(ev, () => { ultimoGesto = performance.now(); }, { passive: true, capture: true }));
-  const entrarEn = (id, k) => { const x = secc(id); if (!x || performance.now() - ultimoGesto > 500 || destino) return; bloqueo = performance.now() + 650; viajar(x.pos(k), .55); };
+  ['wheel', 'touchmove'].forEach(ev => addEventListener(ev, () => { ultimoGesto = performance.now(); }, { passive: true, capture: true }));
+  addEventListener('keydown', e => { if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', ' '].includes(e.key)) ultimoGesto = performance.now(); }, { capture: true });
+  const entrarEn = (id, k) => { const x = secc(id); if (!x || performance.now() - ultimoGesto > 500 || destino || pasaDeLargo()) return; bloqueo = performance.now() + 650; viajar(x.pos(k), .55); };
   if (!quieto) {
     // la rueda se captura antes que el scroll suave; la inercia del trackpad no cuenta como gesto nuevo
     addEventListener('wheel', e => {
       if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
-      const ahora = performance.now(), x = activa();
+      const ahora = performance.now();
+      if (!gesto || ahora - gesto.ultimo > 220) gesto = { t0: ahora, ultimo: ahora, suma: 0, libre: false };
+      gesto.ultimo = ahora; gesto.suma += Math.abs(e.deltaY);
+      if (!gesto.libre && gesto.suma > 520 && ahora - gesto.t0 < 650) { gesto.libre = true; destino = null; bloqueo = 0; acumulado = 0; }
+      if (gesto.libre) { libreHasta = ahora + 450; return; }   // el scroll suave hace el resto
+      const x = activa();
       if (!x) {
         if (ahora < bloqueo) { e.preventDefault(); e.stopPropagation(); bloqueo = Math.max(bloqueo, ahora + 140); return; }
         // a menos de una pantalla de una sección por pasos, un gesto hacia ella entra directamente (portada → 1828, «El trepat» → otoño)
@@ -1318,12 +1327,18 @@
     // en el móvil: al soltar un deslizamiento corto, va al paso siguiente o al anterior (y se para la inercia del dedo)
     let toque = null;
     const raizH = document.documentElement;
-    addEventListener('touchstart', e => { const x = activa(); toque = x ? { x, y: e.touches[0].clientY, k: x.actual() } : null; }, { passive: true });
-    addEventListener('touchend', e => { if (!toque) return; const { x } = toque, dy = toque.y - e.changedTouches[0].clientY, k = toque.k + Math.sign(dy); toque = null;
+    addEventListener('touchstart', e => { const x = activa(); toque = x ? { x, y: e.touches[0].clientY, k: x.actual(), t: performance.now() } : null; }, { passive: true });
+    addEventListener('touchend', e => { if (!toque) return; const { x } = toque, dy = toque.y - e.changedTouches[0].clientY, k = toque.k + Math.sign(dy);
+      const rapido = Math.abs(dy) > 180 || Math.abs(dy) / Math.max(1, performance.now() - toque.t) > .8; toque = null;
+      if (rapido) { const ahora = performance.now(); libreHasta = ahora + 1600; gesto = { t0: ahora, ultimo: ahora, suma: 999, libre: true }; return; } // deslizamiento largo: pasa de largo
       if (Math.abs(dy) < 24 || k < 0 || k >= x.n) return;
       destino = { x, k }; raizH.style.overflow = 'hidden';
       viajar(x.pos(k), .6, () => { destino = null; raizH.style.overflow = ''; }); }, { passive: true });
   }
+
+  const asentar = () => { if (!gesto || !gesto.libre || performance.now() - gesto.ultimo < 200 || destino) return;
+    gesto.libre = false; const x = activa(); if (x) { bloqueo = performance.now() + 500; viajar(x.pos(x.actual()), .5); } };
+  if (lenis) lenis.on('scroll', () => { if (gesto && gesto.libre) { clearTimeout(tAsentar); tAsentar = setTimeout(asentar, 240); } });
 
   let histST = null;
   if (!quieto) {
