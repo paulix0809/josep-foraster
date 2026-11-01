@@ -1273,9 +1273,14 @@
   let histST = null, bloqueo = 0;
   if (!quieto) {
     histST = ScrollTrigger.create({ trigger: '.hist-pin', start: 'top top', end: () => '+=' + innerHeight * .45 * NC, pin: true, invalidateOnRefresh: true,
-      onEnter: () => { bloqueo = performance.now() + 550; }, onEnterBack: () => { bloqueo = performance.now() + 550; }, // la inercia al llegar no salta momentos
+      // al entrar (por arriba o por abajo) se coloca en el primer o el último momento; la inercia de la llegada no salta ninguno
+      onEnter: () => entrar(0), onEnterBack: () => entrar(NC - 1),
       onUpdate: s => { gsap.set('.hist-rail .lleno', { scaleX: s.progress }); ponCap(Math.min(NC - 1, Math.floor(s.progress * NC))); } });
     const posCap = k => histST.start + (histST.end - histST.start) * (k + .5) / NC;
+    // solo cuando llegas haciendo scroll tú: si se pasa por aquí desde el menú (camino de la finca, los vinos…), no se frena
+    let ultimoGesto = 0;
+    ['wheel', 'touchmove', 'keydown'].forEach(ev => addEventListener(ev, () => { ultimoGesto = performance.now(); }, { passive: true, capture: true }));
+    function entrar(k) { if (performance.now() - ultimoGesto > 500) return; bloqueo = performance.now() + 650; if (lenis) lenis.scrollTo(posCap(k), { duration: .55, easing: t => 1 - Math.pow(1 - t, 3), force: true }); }
     railBtns.forEach((b, k) => b.addEventListener('click', () => irA(posCap(k))));
 
     // ── Historia capítulo a capítulo: un gesto de rueda/trackpad, un deslizamiento o una flecha = un momento ──
@@ -1285,33 +1290,44 @@
     let destino = -1, acumulado = 0;
     const saltar = (dir) => {
       const base = destino >= 0 ? destino : capActual(), k = base + dir;
-      if (k < 0 || k >= NC) return false;   // en el primero hacia arriba o en el último hacia abajo se sale de la sección
-      destino = k; bloqueo = performance.now() + 700;
+      // dentro: al momento siguiente; desde el último hacia abajo, a la finca; desde el primero hacia arriba, a la portada
+      const y = k < 0 ? Math.max(0, histST.start - innerHeight) : k >= NC ? histST.end + 12 : posCap(k);
+      destino = k >= 0 && k < NC ? k : -1; bloqueo = performance.now() + 700;
       const fin = () => { destino = -1; };
-      lenis ? lenis.scrollTo(posCap(k), { duration: .75, easing: t => 1 - Math.pow(1 - t, 3), force: true, onComplete: fin }) : (scrollTo(0, posCap(k)), fin());
+      lenis ? lenis.scrollTo(y, { duration: k >= 0 && k < NC ? .75 : .9, easing: t => 1 - Math.pow(1 - t, 3), force: true, onComplete: fin }) : (scrollTo(0, y), fin());
       return true;
     };
     // la rueda se captura antes que el scroll suave; la inercia del trackpad no cuenta como gesto nuevo
+    let ultimoFuera = 0;
     addEventListener('wheel', e => {
-      if (!dentro() || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
-      const dir = Math.sign(e.deltaY), k = destino >= 0 ? destino : capActual();
-      if ((dir < 0 && k === 0 && destino < 0) || (dir > 0 && k === NC - 1 && destino < 0)) return;
-      e.preventDefault(); e.stopPropagation();
+      if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
       const ahora = performance.now();
+      if (!dentro()) {
+        // justo después de salir, la inercia que sobra no frena el viaje a la finca o a la portada
+        if (ahora < bloqueo) { e.preventDefault(); e.stopPropagation(); bloqueo = Math.max(bloqueo, ahora + 140); return; }
+        ultimoFuera = ahora; return;
+      }
+      e.preventDefault(); e.stopPropagation();
+      // llegada con inercia desde fuera: solo coloca en el primer o el último momento
+      if (ahora - ultimoFuera < 250) { ultimoFuera = 0; entrar(e.deltaY > 0 ? 0 : NC - 1); return; }
       if (ahora < bloqueo) { bloqueo = Math.max(bloqueo, ahora + 140); acumulado = 0; return; }
       acumulado += e.deltaY;
-      if (Math.abs(acumulado) > 18) { acumulado = 0; saltar(dir); }
+      if (Math.abs(acumulado) > 18) { const dir = Math.sign(acumulado); acumulado = 0; saltar(dir); }
     }, { passive: false, capture: true });
     addEventListener('keydown', e => {
       if (!dentro() || e.target.matches('input, textarea')) return;
       const dir = ['ArrowDown', 'PageDown', ' '].includes(e.key) ? 1 : ['ArrowUp', 'PageUp'].includes(e.key) ? -1 : 0;
-      if (dir && saltar(dir)) e.preventDefault();
+      if (dir) { e.preventDefault(); if (!e.repeat || performance.now() >= bloqueo - 300) saltar(dir); } // cada pulsación cuenta; mantenerla no se los salta todos
     });
-    // en el móvil: al soltar un deslizamiento corto, va al momento siguiente o al anterior
+    // en el móvil: al soltar un deslizamiento corto, va al momento siguiente o al anterior (y se para la inercia del dedo)
     let toque = null;
+    const raizH = document.documentElement;
     addEventListener('touchstart', e => { toque = dentro() ? { y: e.touches[0].clientY, k: capActual() } : null; }, { passive: true });
     addEventListener('touchend', e => { if (!toque) return; const dy = toque.y - e.changedTouches[0].clientY, k = toque.k + Math.sign(dy); toque = null;
-      if (Math.abs(dy) > 24 && k >= 0 && k < NC) { destino = k; lenis ? lenis.scrollTo(posCap(k), { duration: .6, force: true, onComplete: () => { destino = -1; } }) : scrollTo({ top: posCap(k), behavior: 'smooth' }); } }, { passive: true });
+      if (Math.abs(dy) < 24 || k < 0 || k >= NC) return;
+      destino = k; raizH.style.overflow = 'hidden';
+      const fin = () => { destino = -1; raizH.style.overflow = ''; };
+      lenis ? lenis.scrollTo(posCap(k), { duration: .6, force: true, onComplete: fin }) : (scrollTo(0, posCap(k)), setTimeout(fin, 50)); }, { passive: true });
   }
 
   // ── La finca: cada estación entra capa a capa (primer plano → cielo); la marca recorre el año ──
